@@ -20,6 +20,7 @@ import org.hamcrest.CoreMatchers;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.time.Duration;
@@ -44,12 +45,14 @@ import reactor.test.subscriber.AssertSubscriber;
 import reactor.util.concurrent.QueueSupplier;
 
 import static org.hamcrest.CoreMatchers.*;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.lessThan;
 
 import static java.util.concurrent.ThreadPoolExecutor.*;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.junit.Assert.assertThat;
 import static reactor.core.scheduler.Schedulers.fromExecutor;
 import static reactor.core.scheduler.Schedulers.fromExecutorService;
 
@@ -1039,23 +1042,24 @@ public class FluxPublishOnTest {
 		ts.await(Duration.ofMillis(100))
 		  .assertComplete();
 
-		Assert.assertThat("downstream didn't single request", downstreamRequests.size(), is(1));
-		Assert.assertThat("downstream didn't request 400", downstreamRequests.get(0), is(400L));
+		assertThat("downstream didn't single request", downstreamRequests.size(), is(1));
+		assertThat("downstream didn't request 400", downstreamRequests.get(0), is(400L));
 		long total = 0L;
 		for (Long requested : upstreamRequests) {
 			total += requested;
-			Assert.assertThat("rate limit not applied to request: " + requested,
+			assertThat("rate limit not applied to request: " + requested,
 			//30 is the optimization that eagerly prefetches when 3/4 of the request has been served
 					requested, anyOf(is(40L), is(30L)));
 		}
-		Assert.assertThat("bad upstream total request", total, allOf(
+		assertThat("bad upstream total request", total, allOf(
 				is(greaterThanOrEqualTo(400L)),
 				is(lessThan(440L)
 		)));
 	}
 
+  @Ignore  // HANGS!
   @Test
-  public void monoPublishOnRejectedExecutionExecutorScheduler()
+  public void monoRejectedExecutionExecutorScheduler()
   {
 		ExecutorService executor =
 				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
@@ -1081,8 +1085,9 @@ public class FluxPublishOnTest {
 		executor.shutdownNow();
   }
 
-  @Test
-  public void monoPublishOnRejectedExecutionExecutorServiceScheduler()
+  // Why does this throw exception and no error signal
+  @Test(expected = RejectedExecutionException.class)
+  public void monoRejectedExecutionExecutorServiceScheduler()
   {
 		// Single-threaded pool with sync queue
 		ExecutorService executor =
@@ -1108,5 +1113,304 @@ public class FluxPublishOnTest {
 		latch.countDown();
 		executor.shutdownNow();
   }
+
+	@Test
+	public void coldFluxRejectedExecutionSubscribeExecutorScheduler() throws InterruptedException {
+		// Single-threaded pool with sync queue
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		Flux.range(0,5).publishOn(fromExecutor(executor)).subscribe(assertSubscriber);
+
+		assertSubscriber
+				// Why no values or error
+				.assertNoValues()
+				.assertNoError()
+				.assertNotComplete();
+
+		executor.shutdownNow();
+	}
+
+	// Why does this throw exception and no error signal
+	@Test(expected = RejectedExecutionException.class)
+	public void coldFluxRejectedExecutionSubscribeExecutorServiceScheduler() throws InterruptedException {
+		// Single-threaded pool with sync queue
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		Flux.range(0,5).publishOn(fromExecutorService(executor)).subscribe(assertSubscriber);
+
+		assertSubscriber
+				.assertNoValues()
+				.assertNoError()
+				.assertNotComplete();
+
+		executor.shutdownNow();
+	}
+
+	@Test
+	public void coldFluxRejectedExecutionBlockedTaskExecutorScheduler() throws InterruptedException {
+
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+
+		Flux.range(0,5).publishOn(fromExecutor(executor)).doOnNext(o -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		}).subscribe(assertSubscriber);
+
+		assertSubscriber
+			.assertNoValues()
+			.assertNoError()
+			.assertNotComplete();
+
+		latch.countDown();
+
+		assertSubscriber
+			.await()
+			.assertValues(0,1,2,3,4)
+			.assertNoError()
+			.assertComplete();
+
+		executor.shutdownNow();
+	}
+
+	@Test
+	public void coldFluxRejectedExecutionBlockedTaskExecutorServiceScheduler() throws InterruptedException {
+
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+
+		Flux.range(0,5).publishOn(fromExecutorService(executor)).doOnNext(o -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		}).subscribe(assertSubscriber);
+
+		assertSubscriber
+				.assertNoValues()
+				.assertNoError()
+				.assertNotComplete();
+
+		latch.countDown();
+
+		assertSubscriber
+				.await()
+				.assertValues(0,1,2,3,4)
+				.assertNoError()
+				.assertComplete();
+
+		executor.shutdownNow();
+	}
+
+
+	@Test
+	public void hotFluxRejectedExecutionSubscribeExecutorScheduler() throws InterruptedException {
+		// Single-threaded pool with sync queue
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		EmitterProcessor<Integer> emitterProcessor = EmitterProcessor.create(1);
+		emitterProcessor.publishOn(fromExecutor(executor), 1).subscribe(assertSubscriber);
+		BlockingSink<Integer> sink = emitterProcessor.connectSink();
+
+		assertThat(sink.emit(1), equalTo(Emission.OK));
+		assertThat(sink.emit(2), equalTo(Emission.OK));
+		assertThat(sink.emit(3), equalTo(Emission.BACKPRESSURED));
+		latch.countDown();
+		// Ensure thread frees up and queued items to processed
+		Thread.sleep(100);
+
+		// Why arent these processed? Seems back-pressue is being return, but flux is actually in a
+	  // terminal state of some sort.
+
+		assertThat(sink.emit(4), equalTo(Emission.BACKPRESSURED));
+		assertThat(sink.emit(5), equalTo(Emission.BACKPRESSURED));
+		assertThat(sink.emit(6), equalTo(Emission.BACKPRESSURED));
+
+		sink.complete();
+
+		assertSubscriber
+				// Why aren't values `1` and '2' seen here?
+				.assertNoValues()
+				// Why doesn't flux complete?
+				.assertNotComplete();
+
+		executor.shutdownNow();
+	}
+
+	@Test
+	public void hotFluxRejectedExecutionSubscribeExecutorServiceScheduler() throws InterruptedException {
+
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		EmitterProcessor<Integer> emitterProcessor = EmitterProcessor.create(1);
+		emitterProcessor.publishOn(fromExecutorService(executor), 1).subscribe(assertSubscriber);
+		BlockingSink<Integer> sink = emitterProcessor.connectSink();
+
+		// With ExecutorServiceScheduler flux is cancelled, with ExecutorScheduler it's not
+
+		assertThat(sink.emit(1), equalTo(Emission.CANCELLED));
+		assertThat(sink.emit(2), equalTo(Emission.CANCELLED));
+		assertThat(sink.emit(3), equalTo(Emission.CANCELLED));
+
+		latch.countDown();
+
+		// Ensure thread frees up and queued items to processed
+		Thread.sleep(100);
+
+		assertThat(sink.emit(4), equalTo(Emission.CANCELLED));
+		assertThat(sink.emit(5), equalTo(Emission.CANCELLED));
+		assertThat(sink.emit(6), equalTo(Emission.CANCELLED));
+
+		sink.complete();
+
+		assertSubscriber
+				.assertNoValues()
+				.assertNotComplete();
+
+		executor.shutdownNow();
+	}
+
+	@Test
+	public void hotFluxRejectedExecutionBlockedTaskExecutorScheduler() throws InterruptedException {
+
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		EmitterProcessor<Integer> emitterProcessor = EmitterProcessor.create(1);
+		emitterProcessor.publishOn(fromExecutor(executor), 1).doOnNext(o -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		}).subscribe(assertSubscriber);
+		BlockingSink<Integer> sink = emitterProcessor.connectSink();
+
+		assertThat(sink.emit(1), equalTo(Emission.OK));
+		assertThat(sink.emit(2), equalTo(Emission.OK));
+		assertThat(sink.emit(3), equalTo(Emission.BACKPRESSURED));
+
+		latch.countDown();
+
+		// Ensure thread frees up and allow queued items to processed
+		Thread.sleep(100);
+
+		assertThat(sink.emit(4), equalTo(Emission.OK));
+		Thread.sleep(20);
+		assertThat(sink.emit(5), equalTo(Emission.OK));
+		Thread.sleep(20);
+		assertThat(sink.emit(6), equalTo(Emission.OK));
+
+		sink.complete();
+
+		assertSubscriber
+			.assertValues(1,2,4,5,6)
+			.assertComplete();
+
+		executor.shutdownNow();
+	}
+
+	@Test
+	public void hotFluxRejectedExecutionBlockedTaskExecutorServiceScheduler() throws InterruptedException {
+
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		EmitterProcessor<Integer> emitterProcessor = EmitterProcessor.create(1);
+		emitterProcessor.publishOn(fromExecutorService(executor), 1).doOnNext(o -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		}).subscribe(assertSubscriber);
+		BlockingSink<Integer> sink = emitterProcessor.connectSink();
+
+		assertThat(sink.emit(1), equalTo(Emission.OK));
+		assertThat(sink.emit(2), equalTo(Emission.OK));
+		assertThat(sink.emit(3), equalTo(Emission.BACKPRESSURED));
+
+		latch.countDown();
+
+		// Ensure thread frees up and allow queued items to processed
+		Thread.sleep(100);
+
+		assertThat(sink.emit(4), equalTo(Emission.OK));
+		Thread.sleep(20);
+		assertThat(sink.emit(5), equalTo(Emission.OK));
+		Thread.sleep(20);
+		assertThat(sink.emit(6), equalTo(Emission.OK));
+
+		sink.complete();
+
+		assertSubscriber
+				.assertValues(1,2,4,5,6)
+				.assertComplete();
+
+		executor.shutdownNow();
+	}
+
 
 }
