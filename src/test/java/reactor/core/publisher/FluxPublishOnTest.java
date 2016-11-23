@@ -16,20 +16,28 @@
 
 package reactor.core.publisher;
 
+import org.hamcrest.CoreMatchers;
+import org.junit.AfterClass;
+import org.junit.Assert;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import reactor.core.Exceptions;
+import reactor.core.publisher.BlockingSink.Emission;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import reactor.test.subscriber.AssertSubscriber;
@@ -39,13 +47,21 @@ import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.lessThan;
 
+import static java.util.concurrent.ThreadPoolExecutor.*;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static reactor.core.scheduler.Schedulers.fromExecutor;
+import static reactor.core.scheduler.Schedulers.fromExecutorService;
+
 public class FluxPublishOnTest {
 
 	static ExecutorService exec;
 
 	@BeforeClass
 	public static void before() {
-		exec = Executors.newSingleThreadExecutor();
+		exec = new ThreadPoolExecutor(1, 1,
+				0L, MILLISECONDS,
+				new SynchronousQueue<>(), new AbortPolicy());
 	}
 
 	@AfterClass
@@ -1037,4 +1053,60 @@ public class FluxPublishOnTest {
 				is(lessThan(440L)
 		)));
 	}
+
+  @Test
+  public void monoPublishOnRejectedExecutionExecutorScheduler()
+  {
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		Mono.just(1).publishOn(fromExecutor(executor)).subscribe(assertSubscriber);
+
+		assertSubscriber
+				.await()
+				.assertError(RejectedExecutionException.class)
+				.assertNotComplete();
+
+		latch.countDown();
+		executor.shutdownNow();
+  }
+
+  @Test
+  public void monoPublishOnRejectedExecutionExecutorServiceScheduler()
+  {
+		// Single-threaded pool with sync queue
+		ExecutorService executor =
+				new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new SynchronousQueue(), new AbortPolicy());
+
+		CountDownLatch latch = new CountDownLatch(1);
+		executor.submit(() -> {
+				try {
+						latch.await();
+				} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+				}
+		});
+
+		AssertSubscriber<Integer> assertSubscriber = new AssertSubscriber<>();
+		Mono.just(1).publishOn(fromExecutorService(executor)).subscribe(assertSubscriber);
+
+		assertSubscriber
+				.await()
+				.assertError(RejectedExecutionException.class)
+				.assertNotComplete();
+
+		latch.countDown();
+		executor.shutdownNow();
+  }
+
 }
